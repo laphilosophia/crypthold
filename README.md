@@ -2,7 +2,7 @@
 
 Secure, atomic, hybrid configuration store for Node.js CLI and desktop applications.
 
-[![npm](https://img.shields.io/npm/v/opal.svg)](https://www.npmjs.com/package/opal)
+[![npm](https://img.shields.io/npm/v/@laphilosophia/opal.svg)](https://www.npmjs.com/package/@laphilosophia/opal)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Features
@@ -16,13 +16,13 @@ Secure, atomic, hybrid configuration store for Node.js CLI and desktop applicati
 ## Installation
 
 ```bash
-npm install opal
+npm install @laphilosophia/opal
 ```
 
 ## Quick Start
 
 ```typescript
-import { Opal } from 'opal';
+import { Opal } from '@laphilosophia/opal';
 
 const store = new Opal({ appName: 'my-app' });
 

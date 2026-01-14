@@ -1,5 +1,5 @@
 {
-  "name": "opal",
+  "name": "@laphilosophia/opal",
   "version": "1.0.0",
   "description": "Secure, atomic, hybrid configuration store for Node.js applications",
   "type": "module",
@@ -36,6 +36,17 @@
   ],
   "author": "Erdem Arslan",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/laphilosophia/opal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/laphilosophia/opal/issues"
+  },
+  "homepage": "https://github.com/laphilosophia/opal#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@napi-rs/keyring": "^1.1.6"
   },
