@@ -152,10 +152,45 @@ node --experimental-strip-types examples/filename.ts
 
 ## Security
 
+- **Engineering Analysis:** See the detailed [Risk Matrix analysis](RISK_MATRIX_ANALYSIS.md).
 - **Encryption:** AES-256-GCM with 96-bit random IV (NIST SP 800-38D).
 - **Key Derivation:** HKDF-SHA256 ensures key separation for every write.
 - **Binding:** AAD (Additional Authenticated Data) binds ciphertext to your `appName`.
 - **Permissions:** Enforces `0600` (Owner Read/Write) on Unix-like systems.
+
+## Security FAQ
+
+### Risk matrix summary: how is integrity protected, and what about attestation?
+
+Based on the project risk matrix review, Crypthold currently mitigates **8/9 primary risks** and has one explicit gap acknowledged below.
+
+**Integrity controls implemented**
+
+- **Nonce reuse protection (strong):** Every encryption uses a random 96-bit IV, and each write derives a fresh encryption key via HKDF-SHA256 with new salt.
+- **Tamper/corruption detection (strong):** AES-256-GCM authentication + AAD context binding (`appName`) ensures ciphertext cannot be modified or replayed across apps without detection.
+- **Silent overwrite prevention (strong):** Cross-process lockfiles (`O_EXCL`) plus optimistic conflict checks (`mtime`, `size`, and SHA-256 content hash).
+- **Power-loss safety (good):** Atomic write pattern (`.tmp` + `rename`) with optional `fsync` durability mode.
+- **Stale lock recovery (good):** Timeout-based cleanup for dead writers.
+
+**Known gap from the matrix**
+
+- **Weak master key quality:** Key length is enforced, but entropy quality is not currently scored. This is tracked as an improvement area.
+
+**Attestation position**
+
+Crypthold itself is focused on storage integrity and multi-process safety. Attestation is a complementary layer we recommend in deployment:
+
+1. **Build/runtime attestation** (provenance, signed artifacts, reproducible builds) to verify what code is running.
+2. **Operational attestation** (identity and policy-bound approvals) to verify who executed sensitive key/config actions.
+3. **Source attestation** (device/workload identity, signed upstream events) to increase trust in where inputs originated.
+
+**Proof boundaries (important)**
+
+- **What Crypthold can prove:** encrypted state has not been silently modified, replayed across apps, or overwritten without detection within the configured trust boundary.
+- **What Crypthold cannot prove alone:** that the original input values were true/correct at the moment they were created.
+- **Implication:** if false data enters at ingestion time, Crypthold can preserve that data consistently, but cannot independently certify its real-world truth.
+
+So: Crypthold gives strong integrity at rest; attestation and trustworthy input pipelines are required to improve truthfulness guarantees.
 
 ## License
 
