@@ -9,10 +9,10 @@ This document provides a detailed engineering analysis of Crypthold based on the
 | Nonce reuse (GCM)             | Catastrophic | Very low   | Random IV + key rotation + HKDF salt           |
 | Weak master key               | High         | Medium     | HKDF + entropy warning + doctor                |
 | Silent overwrite (multi-proc) | High         | Medium     | Lockfile + optimistic hash                     |
-| Power loss data loss          | Medium       | Low        | fsync modu                                     |
+| Power loss data loss          | Medium       | Low        | fsync mode                                     |
 | File tamper/corruption        | High         | Medium     | GCM tag + integrity normalization + size guard |
 | Permission leak               | Medium       | Low        | 0600 enforce                                   |
-| Migration bug → veri kaybı    | High         | Low        | two-phase atomic rewrite + tests               |
+| Migration bug → data loss     | High         | Low        | two-phase atomic rewrite + tests               |
 | Stale lock deadlock           | Medium       | Medium     | timestamp + cleanup                            |
 | Memory blow (huge file)       | Medium       | Low        | max size guard                                 |
 
