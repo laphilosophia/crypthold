@@ -608,6 +608,7 @@ export class Opal {
 
   private async acquireLock(): Promise<() => Promise<void>> {
     const lockPath = this.getLockPath()
+    await fs.mkdir(path.dirname(lockPath), { recursive: true })
     const startedAt = this.nowMs()
     const staleMs = this.options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS
     const timeoutMs = this.options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS
@@ -722,12 +723,7 @@ export class Opal {
         })
 
         if (this.options.durability === 'fsync') {
-          const tempHandle = await fs.open(tempPath, 'r')
-          try {
-            await tempHandle.sync()
-          } finally {
-            await tempHandle.close()
-          }
+          await this.fsyncFileBestEffort(tempPath)
         }
 
         await fs.rename(tempPath, this.filePath)
@@ -743,6 +739,22 @@ export class Opal {
       }
     } finally {
       await releaseLock()
+    }
+  }
+
+  private async fsyncFileBestEffort(filePath: string): Promise<void> {
+    try {
+      const handle = await fs.open(filePath, 'r')
+      try {
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EPERM' && code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP') {
+        throw error
+      }
     }
   }
 

@@ -501,5 +501,27 @@ describe('Opal', () => {
       const stat = await fs.stat(configPath)
       expect(stat.mode & 0o777).toBe(0o600)
     })
+
+    it('should create missing parent directory before lock acquisition', async () => {
+      const nestedPath = path.join(tempDir, 'missing', 'nested', 'store.enc')
+
+      const store = new Opal({
+        appName: 'lock-dir-create',
+        configPath: nestedPath,
+        encryptionKeyEnvVar: 'OPAL_TEST_KEY',
+      })
+
+      await store.load()
+      await store.set('ok', true)
+
+      const persisted = new Opal({
+        appName: 'lock-dir-create',
+        configPath: nestedPath,
+        encryptionKeyEnvVar: 'OPAL_TEST_KEY',
+      })
+
+      await persisted.load()
+      expect(persisted.get('ok')).toBe(true)
+    })
   })
 })
