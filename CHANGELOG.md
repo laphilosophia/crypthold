@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-02-14
+
+### Added
+
+- **Memory Security**: New `destroy()` method to manually clear sensitive material and cache from memory.
+
+### Changed
+
+- **Performance Optimization**: Fixed a double-read bug in the `load()` sequence, reducing I/O latency.
+- **I/O Efficiency**: Optimized snapshot validation to check file metadata before performing a full SHA-256 hash.
+- **Write Optimization**: Prevented redundant disk I/O in the `set()` operation when the input value is identical to the cached one.
+- **Refactoring**: Decoupled lock management logic into a dedicated `LockManager` class and moved errors to `error.ts`.
+
+## [2.1.0] - 2026-02-14
+
+### Added
+
+- **Examples**: Added examples for all API methods.
+- **CI**: Added GitHub Actions for automated testing and publishing.
+
 ## [2.0.0] - 2026-02-14
 
 ### Added

@@ -4,12 +4,9 @@ import * as fsSync from 'fs'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import { Cipher } from './cipher.js'
-import {
-  DEFAULT_LOCK_RETRY_INTERVAL_MS,
-  DEFAULT_LOCK_STALE_MS,
-  DEFAULT_LOCK_TIMEOUT_MS,
-  DEFAULT_MAX_FILE_SIZE_BYTES,
-} from './constants.js'
+import { DEFAULT_LOCK_STALE_MS, DEFAULT_MAX_FILE_SIZE_BYTES } from './constants.js'
+import { CryptholdError } from './error.js'
+import { LockManager } from './lock-manager.js'
 import type {
   CryptholdOptions,
   CryptholdV1File,
@@ -20,16 +17,6 @@ import type {
   WatchOptions,
 } from './types.js'
 
-export class CryptholdError extends Error {
-  constructor(
-    message: string,
-    public code: string,
-  ) {
-    super(message)
-    this.name = 'CryptholdError'
-  }
-}
-
 export class Crypthold {
   private filePath: string
   private options: CryptholdOptions
@@ -38,6 +25,8 @@ export class Crypthold {
   private memoryCache: Record<string, unknown> | null = null
   private fileSnapshot: FileSnapshot | null = null
   private deterministicState: number | null = null
+
+  private lockManager: LockManager
 
   constructor(options: CryptholdOptions) {
     if (!options.appName) {
@@ -53,6 +42,8 @@ export class Crypthold {
     const homeDir = process.env.HOME || process.env.USERPROFILE || '.'
     this.filePath =
       options.configPath || path.join(homeDir, '.config', options.appName, 'store.enc')
+
+    this.lockManager = new LockManager({ filePath: this.filePath, nowMs: () => this.nowMs() })
   }
 
   private nowMs(): number {
@@ -113,7 +104,7 @@ export class Crypthold {
 
     try {
       await this.assertWithinMaxSize()
-      const raw = await fs.readFile(this.filePath, 'utf-8')
+      const { raw, snapshot } = await this.readEncryptedFileWithSnapshot()
       const parsed = JSON.parse(raw) as unknown
 
       let decryptedJson: string
@@ -128,7 +119,7 @@ export class Crypthold {
       }
 
       this.memoryCache = JSON.parse(decryptedJson)
-      this.fileSnapshot = await this.readFileSnapshot()
+      this.fileSnapshot = snapshot
 
       if (needsMigration) {
         await this.saveData(this.memoryCache!)
@@ -152,7 +143,6 @@ export class Crypthold {
   }
 
   async doctor(): Promise<DoctorReport> {
-    const lockPath = this.getLockPath()
     const staleMs = this.options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS
 
     let keyPresent = false
@@ -196,7 +186,7 @@ export class Crypthold {
     let lockExists = false
     let lockStale = false
     try {
-      const meta = await this.readLockMeta(lockPath)
+      const meta = await this.lockManager.readLockMeta()
       if (meta) {
         lockExists = true
         if (typeof meta.ts === 'number') {
@@ -433,9 +423,15 @@ export class Crypthold {
 
   /**
    * Sets a value and persists immediately.
+   * Does not write to disk if the value is identical to the cached one (primitive check).
    */
   async set(key: string, value: unknown): Promise<void> {
     this.ensureLoaded()
+
+    if (this.memoryCache![key] === value) {
+      return
+    }
+
     this.memoryCache![key] = value
     await this.saveData(this.memoryCache!)
   }
@@ -471,8 +467,17 @@ export class Crypthold {
     }
   }
 
-  // --- Helpers ---
+  /**
+   * Clears memory cache and destroys sensitive material.
+   * Call this when you no longer need the store to protect memory.
+   */
+  destroy(): void {
+    this.memoryCache = null
+    this.fileSnapshot = null
+    this.deterministicState = null
+  }
 
+  // --- Helpers ---
   private ensureLoaded(): void {
     if (this.memoryCache === null) {
       throw new CryptholdError(
@@ -540,6 +545,29 @@ export class Crypthold {
     )
   }
 
+  private createFileSnapshot(
+    stat: { mtimeMs: number; size: number },
+    content: Buffer,
+  ): FileSnapshot {
+    const contentHash = createHash('sha256').update(content).digest('hex')
+    return { mtimeMs: stat.mtimeMs, size: stat.size, contentHash }
+  }
+
+  private async readEncryptedFileWithSnapshot(): Promise<{ raw: string; snapshot: FileSnapshot }> {
+    const maxFileSize = this.options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES
+    const stat = await fs.stat(this.filePath)
+
+    if (stat.size > maxFileSize) {
+      throw new CryptholdError(
+        `Encrypted store exceeds maximum allowed size (${maxFileSize} bytes).`,
+        'CRYPTHOLD_FILE_TOO_LARGE',
+      )
+    }
+
+    const content = await fs.readFile(this.filePath)
+    return { raw: content.toString('utf-8'), snapshot: this.createFileSnapshot(stat, content) }
+  }
+
   private async assertWithinMaxSize(): Promise<void> {
     const maxFileSize = this.options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES
     const stat = await fs.stat(this.filePath)
@@ -556,8 +584,7 @@ export class Crypthold {
     try {
       const stat = await fs.stat(this.filePath)
       const content = await fs.readFile(this.filePath)
-      const contentHash = createHash('sha256').update(content).digest('hex')
-      return { mtimeMs: stat.mtimeMs, size: stat.size, contentHash }
+      return this.createFileSnapshot(stat, content)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null
@@ -567,21 +594,32 @@ export class Crypthold {
   }
 
   private async assertUnchangedSinceSnapshot(): Promise<void> {
-    const current = await this.readFileSnapshot()
+    const expected = this.fileSnapshot
 
-    if (this.fileSnapshot === null && current === null) {
+    let currentStat: { mtimeMs: number; size: number } | null = null
+    try {
+      const stat = await fs.stat(this.filePath)
+      currentStat = { mtimeMs: stat.mtimeMs, size: stat.size }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error
+      }
+    }
+
+    if (expected === null && currentStat === null) {
       return
     }
 
-    if (this.fileSnapshot === null || current === null) {
+    if (expected === null || currentStat === null) {
       throw new CryptholdError('Encrypted store changed since last load.', 'CRYPTHOLD_CONFLICT')
     }
 
-    if (
-      this.fileSnapshot.mtimeMs !== current.mtimeMs ||
-      this.fileSnapshot.size !== current.size ||
-      this.fileSnapshot.contentHash !== current.contentHash
-    ) {
+    if (expected.mtimeMs !== currentStat.mtimeMs || expected.size !== currentStat.size) {
+      throw new CryptholdError('Encrypted store changed since last load.', 'CRYPTHOLD_CONFLICT')
+    }
+
+    const current = await this.readFileSnapshot()
+    if (!current || expected.contentHash !== current.contentHash) {
       throw new CryptholdError('Encrypted store changed since last load.', 'CRYPTHOLD_CONFLICT')
     }
   }
@@ -615,76 +653,10 @@ export class Crypthold {
     return existingMode & 0o600
   }
 
-  private getLockPath(): string {
-    return `${this.filePath}.lock`
-  }
-
   private async sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms))
   }
 
-  private async readLockMeta(lockPath: string): Promise<{ pid?: number; ts?: number } | null> {
-    try {
-      const raw = await fs.readFile(lockPath, 'utf-8')
-      const parsed = JSON.parse(raw) as { pid?: number; ts?: number }
-      return parsed
-    } catch {
-      return null
-    }
-  }
-
-  private async acquireLock(): Promise<() => Promise<void>> {
-    const lockPath = this.getLockPath()
-    await fs.mkdir(path.dirname(lockPath), { recursive: true })
-    const startedAt = this.nowMs()
-    const staleMs = this.options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS
-    const timeoutMs = this.options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS
-    const retryMs = this.options.lockRetryIntervalMs ?? DEFAULT_LOCK_RETRY_INTERVAL_MS
-
-    while (true) {
-      try {
-        const handle = await fs.open(lockPath, 'wx', 0o600)
-        try {
-          await handle.writeFile(JSON.stringify({ pid: process.pid, ts: this.nowMs() }))
-        } finally {
-          await handle.close()
-        }
-
-        return async () => {
-          try {
-            await fs.unlink(lockPath)
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-              throw error
-            }
-          }
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-          throw error
-        }
-
-        const meta = await this.readLockMeta(lockPath)
-        const lockTs = meta?.ts
-
-        if (typeof lockTs === 'number' && this.nowMs() - lockTs > staleMs) {
-          await fs.unlink(lockPath).catch(() => {})
-          continue
-        }
-
-        if (this.nowMs() - startedAt >= timeoutMs) {
-          throw new CryptholdError('Timed out acquiring store lock.', 'CRYPTHOLD_LOCK_TIMEOUT')
-        }
-
-        await this.sleep(retryMs)
-      }
-    }
-  }
-
-  /**
-   * Atomic Write Strategy: Write to tmp -> Rename
-   * Prevents corruption if process crashes during write.
-   */
   /**
    * Atomic Write Strategy: Write to tmp -> Rename
    * Prevents corruption if process crashes during write.
@@ -712,7 +684,13 @@ export class Crypthold {
   }
 
   private async saveDataOnce(data: Record<string, unknown>): Promise<void> {
-    const releaseLock = await this.acquireLock()
+    const releaseLock = await this.lockManager.acquireLock({
+      staleMs: this.options.lockStaleMs,
+      timeoutMs: this.options.lockTimeoutMs,
+      retryMs: this.options.lockRetryIntervalMs,
+      onTimeout: () =>
+        new CryptholdError('Timed out acquiring store lock.', 'CRYPTHOLD_LOCK_TIMEOUT'),
+    })
 
     try {
       const primary = await this.getPrimaryKey()
@@ -805,4 +783,4 @@ export class Crypthold {
 
 // Re-export for convenience
 export { Cipher } from './cipher.js'
-export type { CryptholdV1File, EncryptedPayload } from './types.js'
+export type { CryptholdError, CryptholdV1File, EncryptedPayload } from './types.js'

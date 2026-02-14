@@ -72,3 +72,20 @@ export interface KeyCandidate {
   keyId: string
   key: Buffer
 }
+
+export interface LockManagerConfig {
+  filePath: string
+  nowMs: () => number
+}
+
+export interface AcquireLockOptions {
+  staleMs?: number
+  timeoutMs?: number
+  retryMs?: number
+  onTimeout: () => Error
+}
+
+export interface LockMeta {
+  pid?: number
+  ts?: number
+}
